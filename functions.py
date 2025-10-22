@@ -5,7 +5,7 @@ def brute_force_two_sum(nums, target):
             if nums[i] + nums[j] == target:
                 return (i, j)
     return None
-
+# [[1,3,5,9], 8]
 def optimized_two_sum(nums, target):
     num_map = {}
     for i, num in enumerate(nums):
