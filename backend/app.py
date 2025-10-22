@@ -32,30 +32,29 @@ def optimize_code_with_gemini(source_code):
     prompt = f"""
 You are an advanced code optimization assistant that supports multiple programming languages (Python, Java, C++, JavaScript, etc.).
 
-Analyze the following provided function and return a structured JSON-style array in this exact format:
+Analyze the following provided function and return a structured JSON response in this exact format:
 
-[
-  can_optimize, 
-  optimized_function_code, 
-  current_time_complexity, 
-  optimized_time_complexity, 
-  reason
-]
+If the function **cannot be optimized**, return only:
+
+{{
+  "can_optimize": "No"
+}}
+
+If the function **can be optimized**, return:
+
+{{
+  "can_optimize": "Yes",
+  "optimized_function_code": "...",           
+  "current_time_complexity": "...",          
+  "optimized_time_complexity": "...",       
+  "reason": "..."                             
+}}
 
 Rules:
-
-1. **Detect the programming language automatically from the provided function.**  
-2. If the function **cannot be optimized**, set `can_optimize` to "No" and return **no other elements**.  
-   Example: ["No"]
-
-3. If the function **can be optimized**, set `can_optimize` to "Yes".  
-   - `optimized_function_code` must be written in the **same programming language** as the input function.  
-   - `current_time_complexity` should be a string describing the time complexity of the original function (e.g., "O(n^2)").  
-   - `optimized_time_complexity` should be a string describing the time complexity of the optimized function (e.g., "O(n)").  
-   - `reason` should briefly explain why the optimized version is faster.
-
-4. Ensure the output is **strictly a JSON-style array** that can be parsed programmatically.  
-5. Do not convert the function to another language. Always preserve the input language.
+1. Detect the programming language automatically from the provided function.
+2. Always preserve the input language.
+3. Only return valid JSON—no extra text, no arrays.
+4. If the function cannot be optimized, do not include other keys.
 
 Here is the function to analyze:
 
@@ -82,9 +81,9 @@ Here is the function to analyze:
         logger.info(f"Cleaned response: {response_text}")
         
         # Parse the response as JSON array
-        response_array = json.loads(response_text)
+        response_json = json.loads(response_text)
         
-        return response_array, None
+        return response_json, None
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {e}")
@@ -120,27 +119,27 @@ def optimize_code():
         logger.info(f"Processing code optimization request...")
         
         # Call Gemini to optimize the code
-        response_array, error = optimize_code_with_gemini(source_code)
+        response_json, error = optimize_code_with_gemini(source_code)
         
         if error:
             logger.error(f"Optimization failed: {error}")
             return jsonify({"status": "fail"}), 500
         
-        if not response_array or len(response_array) == 0:
+        if not response_json:
             logger.error("Empty response from Gemini")
             return jsonify({"status": "fail"}), 500
         
         # Check if optimization is possible
-        if response_array[0] == "No":
+        if response_json.get("can_optimize") == "No":
             logger.info("Code cannot be optimized further")
             return jsonify({"status": "fail"})
         
         # Extract optimization results
-        if response_array[0] == "Yes" and len(response_array) >= 5:
-            optimized_code = response_array[1]
-            current_complexity = response_array[2]
-            optimized_complexity = response_array[3]
-            reason = response_array[4]
+        if response_json.get("can_optimize") == "Yes":
+            optimized_code = response_json.get("optimized_function_code")
+            current_complexity = response_json.get("current_time_complexity")
+            optimized_complexity = response_json.get("optimized_time_complexity")
+            reason = response_json.get("reason")
             
             logger.info("Code optimization successful")
             return jsonify({
@@ -157,6 +156,70 @@ def optimize_code():
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         return jsonify({"status": "fail"}), 500
+    
+@app.route('/api/test-code', methods=['POST'])
+def test_code():
+    """
+    Run original and optimized code on the same test case inputs
+    and evaluate whether the outputs match.
+    """
+    try:
+        data = request.get_json()
+        original_code = data.get("originalCode", "")
+        optimized_code = data.get("optimizedCode", "")
+        test_case_inputs = data.get("testCaseInputs", [])
+
+        if not original_code or not optimized_code or not test_case_inputs:
+            return jsonify({"error": "originalCode, optimizedCode, and testCaseInputs are required"}), 400
+
+        def run_code(code, args):
+            local_vars = {}
+            SAFE_BUILTINS = {
+                'abs': abs,
+                'all': all,
+                'any': any,
+                'bool': bool,
+                'dict': dict,
+                'enumerate': enumerate,
+                'float': float,
+                'int': int,
+                'len': len,
+                'list': list,
+                'max': max,
+                'min': min,
+                'range': range,
+                'set': set,
+                'str': str,
+                'sum': sum,
+                'tuple': tuple,
+                'isinstance': isinstance,
+            }
+            try:
+                exec(code, {"__builtins__": SAFE_BUILTINS}, local_vars)
+                # Find the first function defined
+                func_name = next((k for k,v in local_vars.items() if callable(v)), None)
+                if not func_name:
+                    return "Error: No function defined in code"
+                return local_vars[func_name](*args)
+            except Exception as e:
+                return f"Error: {str(e)}"
+
+        original_output = run_code(original_code, test_case_inputs)
+        optimized_output = run_code(optimized_code, test_case_inputs)
+
+        outputs_match = original_output == optimized_output
+
+        return jsonify({
+            "status": True,
+            "originalOutput": original_output,
+            "optimizedOutput": optimized_output,
+            "outputsMatch": outputs_match
+        })
+
+    except Exception as e:
+        logger.error(f"Error testing code: {e}")
+        return jsonify({"status": "fail", "error": str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -170,7 +233,8 @@ def home():
         "message": "Code Optimizer API",
         "endpoints": {
             "/api/optimize-code": "POST - Optimize code",
-            "/health": "GET - Health check"
+            "/health": "GET - Health check",
+            "/api/test-code": "POST - Test original and optimized code"
         }
     })
 
